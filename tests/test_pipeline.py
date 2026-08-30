@@ -255,6 +255,25 @@ def test_rate_limit_detection() -> None:
     assert not G._is_rate_limit(RuntimeError("404 NOT_FOUND"))
 
 
+def test_billing_exhausted_is_not_treated_as_a_retryable_rate_limit() -> None:
+    depleted = RuntimeError(
+        "429 RESOURCE_EXHAUSTED. Your prepayment credits are depleted. billing#prepay"
+    )
+    assert G._is_billing_exhausted(depleted)
+    assert not G._is_rate_limit(depleted)
+
+
+def test_advise_returns_python_facts_when_gemini_is_down(monkeypatch, computed) -> None:
+    monkeypatch.setattr(G, "get_kb", lambda: (_ for _ in ()).throw(RuntimeError("no embeddings")))
+    monkeypatch.setattr(
+        G, "_invoke_with_retry",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("prepayment credits are depleted")),
+    )
+    answer = G.advise(computed)["answer"]
+    assert "computed in Python" in answer
+    assert "take-home" in answer.lower() or "Rs" in answer
+
+
 def test_retry_delay_prefers_the_servers_own_hint() -> None:
     assert G._retry_delay(RuntimeError("Please retry in 53.5s."), 0) == pytest.approx(54.5)
     assert G._retry_delay(RuntimeError("boom"), 0) == 5.0     # exponential fallback
@@ -307,3 +326,12 @@ class _RaisingLLM(_StubLLM):
 
     def invoke(self, _prompt):
         raise RuntimeError("API down")
+
+
+def test_lexical_retrieval_works_without_embeddings(monkeypatch) -> None:
+    import knowledge
+
+    monkeypatch.setattr(knowledge.KnowledgeBase, "_load_or_build", lambda self: None)
+    kb = knowledge.KnowledgeBase()
+    hits = kb.search("emergency fund", k=3)
+    assert any("emergency" in (heading + " " + body).lower() for heading, body, _ in hits)

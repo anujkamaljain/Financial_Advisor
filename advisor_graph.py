@@ -68,7 +68,15 @@ RETRY_ATTEMPTS = 3
 _RETRY_HINT = re.compile(r"retry in (\d+(?:\.\d+)?)s", re.IGNORECASE)
 
 
+def _is_billing_exhausted(exc: Exception) -> bool:
+    """Prepay/billing 429s will not recover by waiting; retrying burns the remaining quota."""
+    text = str(exc).lower()
+    return "prepayment credits are depleted" in text or "billing#prepay" in text
+
+
 def _is_rate_limit(exc: Exception) -> bool:
+    if _is_billing_exhausted(exc):
+        return False
     text = str(exc)
     return "429" in text or "RESOURCE_EXHAUSTED" in text or "exceeded your current quota" in text
 
@@ -90,7 +98,7 @@ def _invoke_with_retry(runnable, payload):
         try:
             return runnable.invoke(payload)
         except Exception as exc:  # noqa: BLE001 - provider exception types vary
-            if not _is_rate_limit(exc) or attempt == RETRY_ATTEMPTS - 1:
+            if _is_billing_exhausted(exc) or not _is_rate_limit(exc) or attempt == RETRY_ATTEMPTS - 1:
                 raise
             time.sleep(_retry_delay(exc, attempt))
     raise RuntimeError("unreachable")
@@ -428,25 +436,43 @@ def advise(state: AdvisorState) -> AdvisorState:
             )
         }
 
-    kb = get_kb()
     query = f"{state['message']} allocation asset mix emergency fund insurance tax for salaried"
     facts = _facts_block(state)
+    try:
+        principles = get_kb().context_for(query, k=5)
+    except Exception:  # noqa: BLE001 - the FACTS block is enough to narrate from
+        principles = ""
 
-    response = _invoke_with_retry(
-        _chat(0.2),
-        [
-            ("system", ADVISE_SYSTEM),
-            (
-                "user",
-                ADVISE_USER.format(
-                    principles=kb.context_for(query, k=5),
-                    facts=facts,
-                    message=state["message"],
+    try:
+        response = _invoke_with_retry(
+            _chat(0.2),
+            [
+                ("system", ADVISE_SYSTEM),
+                (
+                    "user",
+                    ADVISE_USER.format(
+                        principles=principles,
+                        facts=facts,
+                        message=state["message"],
+                    ),
                 ),
-            ),
-        ],
-    )
-    return {"answer": _response_text(response)}
+            ],
+        )
+        return {"answer": _response_text(response)}
+    except Exception as exc:  # noqa: BLE001 - tables already computed; do not crash the page
+        reason = (
+            "Gemini billing or quota is exhausted. Add credits at https://aistudio.google.com/ "
+            "or wait for the free-tier reset."
+            if _is_billing_exhausted(exc) or "429" in str(exc) or "RESOURCE_EXHAUSTED" in str(exc)
+            else f"The narrative model failed ({type(exc).__name__})."
+        )
+        return {
+            "answer": (
+                f"{reason} The monthly plan above was computed in Python and does not "
+                "depend on the model.\n\n"
+                + facts
+            )
+        }
 
 
 def route_entry(state: AdvisorState) -> Literal["research", "advise"]:

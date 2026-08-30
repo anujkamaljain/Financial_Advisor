@@ -189,7 +189,19 @@ if prompt := st.chat_input("Tell me your salary, e.g. 'my salary is 1.2 lakhs, I
         }
 
         with st.spinner("Researching live rates and computing your plan..."):
-            result: AdvisorState = app.invoke(fresh)
+            try:
+                result: AdvisorState = app.invoke(fresh)
+            except Exception as exc:
+                text = str(exc)
+                if "prepayment credits" in text.lower() or "RESOURCE_EXHAUSTED" in text or "429" in text:
+                    st.error(
+                        "Gemini quota or billing is exhausted, so the model cannot answer right now. "
+                        "Add credits at https://aistudio.google.com/ or wait for the free-tier reset, "
+                        "then try again."
+                    )
+                else:
+                    st.error(f"{type(exc).__name__}: {exc}")
+                st.stop()
 
         for note in result.get("notes", []):
             if note.startswith("Could not read new details"):
