@@ -62,6 +62,16 @@ def test_retry_cycle_engages_only_while_budget_remains() -> None:
     assert G.after_research({"failed_keys": [], "attempts": 1}) == "compute"
 
 
+def test_after_research_does_not_retry_when_gemini_billing_is_dead() -> None:
+    dead = ValidatedRate(
+        key="ppf", label="PPF", value_pct=7.1, origin="fallback",
+        reject_reason="Gemini billing/quota exhausted; labelled assumptions used",
+    )
+    assert G.after_research(
+        {"failed_keys": ["ppf"], "attempts": 1, "rates": {"ppf": dead}}
+    ) == "compute"
+
+
 # --- Compute node ----------------------------------------------------------
 def test_compute_produces_plan_and_tax(computed) -> None:
     plan, tax = computed["plan"], computed["tax"]
@@ -225,11 +235,10 @@ def test_one_lakh_plural_is_parsed_when_the_model_skips_it(monkeypatch) -> None:
 
 
 def test_extraction_failure_still_reads_a_written_salary(monkeypatch) -> None:
-    """An API outage must not discard a salary the user already typed."""
+    """A salary already written in the message must not depend on the chat model."""
     monkeypatch.setattr(G, "_chat", lambda *_, **__: _RaisingLLM())
     result = G.extract_profile({"message": "my salary is 1.2 lakhs", "profile": None})
     assert result["profile"].monthly_take_home == pytest.approx(120_000)
-    assert "Could not read new details" in result["notes"][0]
 
 
 def test_extraction_failure_without_a_salary_asks_to_retry(monkeypatch) -> None:
@@ -335,3 +344,21 @@ def test_lexical_retrieval_works_without_embeddings(monkeypatch) -> None:
     kb = knowledge.KnowledgeBase()
     hits = kb.search("emergency fund", k=3)
     assert any("emergency" in (heading + " " + body).lower() for heading, body, _ in hits)
+
+
+def test_research_rates_falls_back_when_crew_billing_is_dead(monkeypatch) -> None:
+    import research
+
+    monkeypatch.setattr(research, "_GEMINI_UNAVAILABLE", False)
+
+    class _Boom:
+        def kickoff(self):
+            raise RuntimeError("Your prepayment credits are depleted. billing#prepay")
+
+    monkeypatch.setattr(research, "fetch_evidence", lambda keys: {k: "x" for k in keys})
+    monkeypatch.setattr(research, "build_crew", lambda keys, pack: _Boom())
+    rates, failed = research.research_rates(["ppf"])
+    assert failed == ["ppf"]
+    assert rates["ppf"].origin == "fallback"
+    assert "exhausted" in rates["ppf"].reject_reason.lower()
+    monkeypatch.setattr(research, "_GEMINI_UNAVAILABLE", False)

@@ -308,6 +308,21 @@ def save_cached_rates(rates: dict[str, ValidatedRate]) -> None:
     )
 
 
+def _is_gemini_exhausted(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return "prepayment credits are depleted" in text or "billing#prepay" in text
+
+
+def _fallback_book(keys: list[str], reason: str) -> tuple[dict[str, ValidatedRate], list[str]]:
+    rates, failed = validate_rates(RateResearchResult(), keys)
+    for key in failed:
+        rates[key].reject_reason = reason
+    return rates, failed
+
+
+_GEMINI_UNAVAILABLE = False
+
+
 def research_rates(keys: list[str] | None = None) -> tuple[dict[str, ValidatedRate], list[str]]:
     """Search, extract, verify and validate. Always returns a complete rate book.
 
@@ -315,21 +330,30 @@ def research_rates(keys: list[str] | None = None) -> tuple[dict[str, ValidatedRa
     with a stated reason, because a partial plan the user can audit beats a
     stack trace.
     """
+    global _GEMINI_UNAVAILABLE
     keys = keys or list(RATES)
+    if _GEMINI_UNAVAILABLE:
+        return _fallback_book(
+            keys, "Gemini billing/quota exhausted; labelled assumptions used"
+        )
     try:
         pack = format_evidence_pack(fetch_evidence(keys))
         output = build_crew(keys, pack).kickoff()
-    except Exception as exc:  # noqa: BLE001 - external APIs fail; the plan must not
-        rates, failed = validate_rates(RateResearchResult(), keys)
-        reason = f"research unavailable ({type(exc).__name__})"
-        for key in failed:
-            rates[key].reject_reason = reason
-        return rates, failed
-
-    result = output.pydantic if isinstance(output.pydantic, RateResearchResult) else None
-    if result is None:
         try:
-            result = RateResearchResult.model_validate_json(str(output))
-        except Exception:  # noqa: BLE001 - malformed model output is expected, not exceptional
-            result = RateResearchResult()
-    return validate_rates(result, keys)
+            parsed = getattr(output, "pydantic", None)
+        except Exception as exc:  # noqa: BLE001 - .pydantic can trigger another model call
+            raise RuntimeError(str(exc)) from exc
+        result = parsed if isinstance(parsed, RateResearchResult) else None
+        if result is None or not isinstance(result, RateResearchResult):
+            try:
+                result = RateResearchResult.model_validate_json(str(output))
+            except Exception:  # noqa: BLE001 - malformed model output is expected
+                result = RateResearchResult()
+        return validate_rates(result, keys)
+    except Exception as exc:  # noqa: BLE001 - external APIs fail; the plan must not
+        if _is_gemini_exhausted(exc):
+            _GEMINI_UNAVAILABLE = True
+            reason = "Gemini billing/quota exhausted; labelled assumptions used"
+        else:
+            reason = f"research unavailable ({type(exc).__name__})"
+        return _fallback_book(keys, reason)

@@ -26,7 +26,7 @@ from langgraph.graph import END, StateGraph
 from config import CHAT_MODEL, GEMINI_API_KEY, MAX_RESEARCH_RETRIES, RATES
 from finance import build_plan, compute_tax, format_inr, load_tax_rules
 from knowledge import get_kb
-from research import load_cached_rates, research_rates, save_cached_rates
+from research import _fallback_book, load_cached_rates, research_rates, save_cached_rates
 from schemas import (
     FinancialPlan,
     ProfileExtraction,
@@ -179,24 +179,22 @@ def extract_profile(state: AdvisorState) -> AdvisorState:
     """Pull stated facts out of the message and merge them onto any existing profile."""
     previous = state.get("profile")
     notes: list[str] = []
-    found: ProfileExtraction | None = None
-    llm = _chat(0.0).with_structured_output(ProfileExtraction)
-    try:
-        found = _invoke_with_retry(
-            llm, EXTRACT_PROMPT.format(message=state["message"])
-        )
-    except Exception as exc:  # noqa: BLE001 - still parse the message in Python below
-        notes.append(
-            f"Could not read new details from that message ({type(exc).__name__})."
-        )
-
-    if found is None:
-        found = ProfileExtraction()
-
+    found = ProfileExtraction()
     parsed_salary, parsed_annual = parse_indian_salary(state["message"])
-    if found.salary_amount is None and parsed_salary is not None:
+    if parsed_salary is not None:
         found.salary_amount = parsed_salary
         found.salary_is_annual = parsed_annual
+    else:
+        try:
+            llm = _chat(0.0).with_structured_output(ProfileExtraction)
+            found = _invoke_with_retry(
+                llm, EXTRACT_PROMPT.format(message=state["message"])
+            )
+        except Exception as exc:  # noqa: BLE001 - still parse remaining fields below
+            notes.append(
+                f"Could not read new details from that message ({type(exc).__name__})."
+            )
+            found = ProfileExtraction()
     if found.age is None:
         found.age = parse_stated_age(state["message"])
     if found.monthly_emi is None and _NO_EMI.search(state["message"]):
@@ -269,7 +267,13 @@ def research(state: AdvisorState) -> AdvisorState:
     else:
         targets = state.get("failed_keys", [])
 
-    rates, failed = research_rates(targets)
+    try:
+        rates, failed = research_rates(targets)
+    except Exception as exc:  # noqa: BLE001 - never let a dead Gemini kill the plan
+        rates, failed = _fallback_book(
+            targets or list(RATES),
+            f"research unavailable ({type(exc).__name__})",
+        )
 
     if attempts > 0:
         merged = dict(state.get("rates", {}))
@@ -296,6 +300,13 @@ def research(state: AdvisorState) -> AdvisorState:
 
 def after_research(state: AdvisorState) -> Literal["research", "compute"]:
     """Retry unverified rates while budget remains -- the graph's real cycle."""
+    rates = state.get("rates") or {}
+    if any(
+        "exhausted" in (rate.reject_reason or "").lower()
+        or "unavailable" in (rate.reject_reason or "").lower()
+        for rate in rates.values()
+    ):
+        return "compute"
     if state.get("failed_keys") and state.get("attempts", 0) <= MAX_RESEARCH_RETRIES:
         return "research"
     return "compute"
