@@ -192,7 +192,7 @@ is told to quote is actually present in the FACTS block it receives.
 
 ```
 main.py                 chat loop and terminal rendering
-graph.py                LangGraph state machine, nodes, prompts, retry/backoff
+advisor_graph.py        LangGraph state machine, nodes, prompts, retry/backoff
 research.py             parallel Serper fetch, CrewAI crew, rate validation
 finance.py              deterministic engine: tax, allocation, compounding (no LLM)
 knowledge.py            vanilla RAG: chunk, embed, cache, cosine search

@@ -17,7 +17,7 @@ from rich.table import Table
 
 from config import require_keys
 from finance import format_inr
-from graph import AdvisorState, build_graph
+from advisor_graph import AdvisorState, build_graph
 from schemas import FinancialPlan, TaxBreakdown, ValidatedRate
 
 console = Console()
