@@ -125,37 +125,74 @@ def _response_text(response) -> str:
 EXTRACT_PROMPT = """Extract only the financial facts the user explicitly stated.
 
 Rules:
-- Convert Indian units to plain rupees: "1.2 lakhs" -> 120000, "1.2L" -> 120000, "1 crore" -> 10000000.
+- Convert Indian units to plain rupees: "1 lakh" / "1 lakhs" -> 100000, "1.2 lakhs" -> 120000,
+  "1.2L" -> 120000, "1 crore" -> 10000000. Singular and plural unit spellings are the same.
 - Set salary_is_annual to true ONLY if the user clearly said per year, per annum, CTC or annual.
   Indian users saying "my salary is X" almost always mean monthly in-hand pay.
+- "no EMI" / "no loans" means monthly_emi = 0, not null.
 - Leave a field null if the user did not mention it. Never guess or infer a plausible value.
 - risk_profile must be one of conservative, moderate, aggressive, or null.
 
 User message: {message}"""
 
 
+_LAKH = re.compile(r"(?i)(\d+(?:\.\d+)?)\s*(lakhs?|lacs?)\b")
+_LPA = re.compile(r"(?i)(\d+(?:\.\d+)?)\s*lpa\b")
+_RUPEE_SALARY = re.compile(
+    r"(?i)(?:salary|earn|take[\s-]*home|in[\s-]*hand).{0,24}(\d{4,9})"
+)
+_AGE = re.compile(r"(?i)\b(?:i(?:['’]m| am)|age(?:\s*is)?)\s*(\d{1,2})\b")
+_ANNUAL = re.compile(r"(?i)\b(per year|per annum|annual|ctc|lpa)\b")
+_MONTHLY = re.compile(r"(?i)\b(per month|/\s*month|monthly)\b")
+_NO_EMI = re.compile(r"(?i)\bno\s+(emi|emis|loans?)\b")
+
+
+def parse_indian_salary(message: str) -> tuple[float | None, bool]:
+    """Best-effort rupee amount and whether it is annual. Used when the LLM skips a figure."""
+    annual = bool(_ANNUAL.search(message)) and not _MONTHLY.search(message)
+    match = _LAKH.search(message) or _LPA.search(message)
+    if match:
+        return float(match.group(1)) * 100_000, annual or bool(_LPA.search(message))
+    match = _RUPEE_SALARY.search(message)
+    if match:
+        return float(match.group(1)), annual
+    return None, False
+
+
+def parse_stated_age(message: str) -> int | None:
+    match = _AGE.search(message)
+    if not match:
+        return None
+    age = int(match.group(1))
+    return age if 18 <= age <= 75 else None
+
+
 def extract_profile(state: AdvisorState) -> AdvisorState:
     """Pull stated facts out of the message and merge them onto any existing profile."""
     previous = state.get("profile")
+    notes: list[str] = []
+    found: ProfileExtraction | None = None
     llm = _chat(0.0).with_structured_output(ProfileExtraction)
     try:
-        found: ProfileExtraction = _invoke_with_retry(
+        found = _invoke_with_retry(
             llm, EXTRACT_PROMPT.format(message=state["message"])
         )
-    except Exception as exc:  # noqa: BLE001 - degrade, but never pretend nothing was said
-        # Returning an empty extraction here would make an API outage look like the
-        # user forgot to mention their salary, so the cause is surfaced instead.
-        return {
-            "profile": previous,
-            "profile_changed": False,
-            "notes": [
-                f"Could not read new details from that message ({type(exc).__name__}). "
-                + ("Answering from the existing plan." if previous
-                   else "Please try again in a minute.")
-            ],
-        }
+    except Exception as exc:  # noqa: BLE001 - still parse the message in Python below
+        notes.append(
+            f"Could not read new details from that message ({type(exc).__name__})."
+        )
 
-    notes: list[str] = []
+    if found is None:
+        found = ProfileExtraction()
+
+    parsed_salary, parsed_annual = parse_indian_salary(state["message"])
+    if found.salary_amount is None and parsed_salary is not None:
+        found.salary_amount = parsed_salary
+        found.salary_is_annual = parsed_annual
+    if found.age is None:
+        found.age = parse_stated_age(state["message"])
+    if found.monthly_emi is None and _NO_EMI.search(state["message"]):
+        found.monthly_emi = 0.0
 
     monthly: float | None = None
     if found.salary_amount:
@@ -188,6 +225,8 @@ def extract_profile(state: AdvisorState) -> AdvisorState:
     }
 
     if previous is None and monthly is None:
+        if notes and notes[0].startswith("Could not read new details"):
+            notes.append("Please try again in a minute.")
         return {"profile": None, "profile_changed": False, "notes": notes}
 
     if previous is None:

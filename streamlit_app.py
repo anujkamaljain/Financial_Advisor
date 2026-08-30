@@ -6,18 +6,28 @@ Deploy free:  push to GitHub → connect on share.streamlit.io
 
 from __future__ import annotations
 
-import streamlit as st
+import os
 
-from config import require_keys
-from finance import format_inr
-from graph import AdvisorState, build_graph
-from schemas import FinancialPlan, TaxBreakdown, ValidatedRate
+import streamlit as st
 
 st.set_page_config(
     page_title="Financial Advisor Agent",
     page_icon="💰",
     layout="wide",
 )
+
+# Streamlit Cloud injects secrets as st.secrets; config.py reads os.environ at import.
+try:
+    for _key, _val in st.secrets.items():
+        if isinstance(_val, (str, int, float)):
+            os.environ.setdefault(str(_key), str(_val))
+except Exception:
+    pass
+
+from config import require_keys
+from finance import format_inr
+from graph import AdvisorState, build_graph
+from schemas import FinancialPlan, TaxBreakdown, ValidatedRate
 
 # ── Session state ──────────────────────────────────────────────────────────
 if "state" not in st.session_state:
@@ -182,7 +192,10 @@ if prompt := st.chat_input("Tell me your salary, e.g. 'my salary is 1.2 lakhs, I
             result: AdvisorState = app.invoke(fresh)
 
         for note in result.get("notes", []):
-            st.caption(f"_{note}_")
+            if note.startswith("Could not read new details"):
+                st.warning(note)
+            else:
+                st.caption(f"_{note}_")
 
         plan = result.get("plan")
         tax = result.get("tax")

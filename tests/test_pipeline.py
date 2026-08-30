@@ -211,12 +211,33 @@ def test_message_with_no_facts_leaves_profile_untouched(monkeypatch) -> None:
     assert result["profile_changed"] is False
 
 
-def test_extraction_failure_says_so_instead_of_blaming_the_user(monkeypatch) -> None:
-    """An API outage must not be reported as "you didn't give me a salary"."""
+def test_one_lakh_plural_is_parsed_when_the_model_skips_it(monkeypatch) -> None:
+    """'1 lakhs' is valid user English; the extractor must not wait for perfect grammar."""
+    from schemas import ProfileExtraction
+
+    monkeypatch.setattr(G, "_chat", lambda *_, **__: _StubLLM(ProfileExtraction()))
+    result = G.extract_profile({
+        "message": "My salary is 1 lakhs per month, I am 21, no EMI, no Loans",
+    })
+    assert result["profile"].monthly_take_home == pytest.approx(100_000)
+    assert result["profile"].age == 21
+    assert result["profile"].monthly_emi == 0
+
+
+def test_extraction_failure_still_reads_a_written_salary(monkeypatch) -> None:
+    """An API outage must not discard a salary the user already typed."""
     monkeypatch.setattr(G, "_chat", lambda *_, **__: _RaisingLLM())
     result = G.extract_profile({"message": "my salary is 1.2 lakhs", "profile": None})
-    assert result["profile"] is None and result["profile_changed"] is False
+    assert result["profile"].monthly_take_home == pytest.approx(120_000)
     assert "Could not read new details" in result["notes"][0]
+
+
+def test_extraction_failure_without_a_salary_asks_to_retry(monkeypatch) -> None:
+    monkeypatch.setattr(G, "_chat", lambda *_, **__: _RaisingLLM())
+    result = G.extract_profile({"message": "hello there", "profile": None})
+    assert result["profile"] is None
+    assert "Could not read new details" in result["notes"][0]
+    assert "try again" in result["notes"][-1].lower()
 
 
 def test_extraction_failure_keeps_an_existing_profile(monkeypatch) -> None:
@@ -224,7 +245,7 @@ def test_extraction_failure_keeps_an_existing_profile(monkeypatch) -> None:
     previous = UserProfile(monthly_take_home=120_000, age=27)
     result = G.extract_profile({"message": "why gold?", "profile": previous})
     assert result["profile"] == previous
-    assert "existing plan" in result["notes"][0]
+    assert "Could not read new details" in result["notes"][0]
 
 
 # --- Rate-limit backoff ----------------------------------------------------
