@@ -1,0 +1,31 @@
+# Requires Python 3.10-3.13. CrewAI does not support 3.14 yet, and pip will
+# silently resolve a 2024-era crewai 0.11 if you try.
+#
+# Verified working on 2026-08-30 with:
+#   crewai 1.15.18            langgraph 1.2.11
+#   langchain-core 1.6.1      langchain-google-genai 4.3.7
+#   google-genai 2.20.0       pydantic 2.12.5
+#   numpy 2.5.2               rich 14.3.4
+
+# Multi-agent research crew
+crewai>=1.0,<2.0
+
+# Orchestration state machine + Gemini bindings
+langgraph>=1.0
+langchain-core>=1.0
+langchain-google-genai>=4.0
+# Backs CrewAI's native Gemini provider (crewai 1.x dropped LiteLLM)
+google-genai>=2.0
+
+# Structured output contracts, env loading, HTTP, vector math, CLI rendering
+pydantic>=2.7
+python-dotenv>=1.0
+requests>=2.32
+numpy>=1.26
+rich>=13.7
+
+# Web UI
+streamlit>=1.35
+
+# Dev
+pytest>=8.0

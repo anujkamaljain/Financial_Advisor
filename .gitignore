@@ -1,0 +1,8 @@
+.env
+.venv/
+.cache/
+__pycache__/
+*.pyc
+.pytest_cache/
+temp.md
+INTERVIEW_PREP.md
