@@ -1,0 +1,27 @@
+{
+  "_comment": "Statutory constants are versioned data, not model output. Update this file when the Finance Act changes and the engine picks it up with no code change. The app always prints the 'fy' and 'source_url' below so the user can audit which ruleset produced their numbers.",
+  "fy": "FY 2025-26 (AY 2026-27)",
+  "regime": "New tax regime, salaried individual below 60",
+  "source_url": "https://incometaxindia.gov.in/",
+  "standard_deduction": 75000,
+  "slabs": [
+    { "upto": 400000, "rate": 0.0 },
+    { "upto": 800000, "rate": 0.05 },
+    { "upto": 1200000, "rate": 0.1 },
+    { "upto": 1600000, "rate": 0.15 },
+    { "upto": 2000000, "rate": 0.2 },
+    { "upto": 2400000, "rate": 0.25 },
+    { "upto": null, "rate": 0.3 }
+  ],
+  "rebate_87a": {
+    "taxable_income_limit": 1200000,
+    "max_rebate": 60000
+  },
+  "cess_rate": 0.04,
+  "surcharge_slabs": [
+    { "above": 20000000, "rate": 0.25 },
+    { "above": 10000000, "rate": 0.15 },
+    { "above": 5000000, "rate": 0.1 }
+  ],
+  "section_80c_limit_old_regime": 150000
+}
